@@ -1,1 +1,25 @@
-
+{
+  "id": "seriesbiblicas-net",
+  "name": "Series Bíblicas .NET",
+  "version": "1.0.0",
+  "apiVersion": 3,
+  "entry": "plugin.js",
+  "description": "Series y películas bíblicas gratuitas en alta calidad.",
+  "author": "Hotaru Yume",
+  "creator": "hotaruyume",
+  "homepage": "https://github.com/hotaruyume/kino-plugin-seriesbiblicas",
+  "hosts": [
+    "seriesbiblicas.net",
+    "ok.ru",
+    "*.ok.ru"
+  ],
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve"
+  ],
+  "color": "#1a73e8",
+  "icon": "icon.png"
+}
