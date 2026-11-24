@@ -1,0 +1,44 @@
+{
+  "id": "tiohentai",
+  "name": "TioHentai",
+  "version": "1.0.0",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Hentai en español HD de tiohentai.com. YourUpload prioritario, Voe y Mega al final. Episodios y series.",
+  "author": "Hotaru Yume",
+  "creator": "hotaruyume",
+  "homepage": "https://tiohentai.com",
+  "hosts": [
+    "tiohentai.com",
+    "*.tiohentai.com",
+    "yourupload.com",
+    "*.yourupload.com",
+    "vidcache.net",
+    "*.vidcache.net",
+    "voe.sx",
+    "*.voe.sx",
+    "mega.nz",
+    "*.mega.nz"
+  ],
+  "streamHosts": "any",
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve"
+  ],
+  "categories": [
+    "anime",
+    "series"
+  ],
+  "color": "#C81428",
+  "icon": "icon.png",
+  "theme": {
+    "accent": "#C81428",
+    "onAccent": "#FFFFFF",
+    "background": "#0D0D0D",
+    "surface": "#1A1A1A",
+    "highlight": "#E53935"
+  }
+}
