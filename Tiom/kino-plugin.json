@@ -1,7 +1,7 @@
 {
   "id": "tiohentai",
   "name": "TioHentai",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": "Hentai en español HD de tiohentai.com. YourUpload prioritario, Voe y Mega al final. Episodios y series.",
