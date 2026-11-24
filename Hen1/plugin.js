@@ -9,7 +9,7 @@
  * - Búsqueda y Ver más: máximo permitido (48)
  * - Ajuste de calidad; prioriza mejor servidor/calidad; evita anuncios
  * - Teléfono y TV (MP4 directo con Referer)
- * v1.0.1 — mirror primero, await r.text(), isChallenge no FP, home Row[], resolve Stream
+ * v1.0.2 — mirror primero, await r.text(), isChallenge no FP, home Row[], resolve Stream
  */
 
 const PRIMARY = "https://hanime1.me";
@@ -300,7 +300,9 @@ function extractSources(html) {
     if (!srcM) continue;
     var src = absUrl(srcM[1]);
     if (!src || src.indexOf(".mp4") === -1) continue;
-    if (/ads?|banner|promo|click|tracker/i.test(src)) continue;
+    // No usar "ads?" suelto: coincide con "vdownload"
+    if (/(?:^|[\/?&_.-])(?:ads?|banner|promo|click|tracker)(?:[\/?&_.-]|$)/i.test(src)) continue;
+    if (/trafficjunky|exoclick|juicyads|doubleclick|googlesyndication/i.test(src)) continue;
     var size = 0;
     var sizeM = attrs.match(/\bsize=["']?(\d+)["']?/i);
     if (sizeM) size = parseInt(sizeM[1], 10) || 0;
@@ -326,6 +328,20 @@ function extractSources(html) {
     var cm = html.match(/const\s+source\s*=\s*['"]([^'"]+)['"]/i);
     if (cm && /\.mp4/i.test(cm[1])) {
       out.push({ url: absUrl(cm[1]), height: 0, format: "mp4" });
+    }
+  }
+
+  // fallback: cualquier mp4 de vdownload/hembed en la página
+  if (!out.length) {
+    var reH = /https?:\/\/(?:vdownload\.)?hembed\.com\/[^\s"']+?\.mp4[^\s"']*/gi;
+    var hm;
+    while ((hm = reH.exec(html)) !== null) {
+      var u = hm[0];
+      if (/image\//i.test(u)) continue;
+      var hh = 0;
+      var hhm = u.match(/(\d{3,4})p/i);
+      if (hhm) hh = parseInt(hhm[1], 10) || 0;
+      out.push({ url: u, height: hh, format: "mp4" });
     }
   }
 

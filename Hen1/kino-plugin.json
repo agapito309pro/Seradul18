@@ -1,10 +1,10 @@
 {
   "id": "hanime1",
   "name": "Hanime1.me",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Hentai de hanime1.me / hanimeone.me (mirror si CF). MP4 multi-calidad. Solo +18.",
+  "description": "Hentai de hanime1.me / hanimeone.me. MP4 multi-calidad. Fix filtro ads que bloqueaba vdownload.",
   "author": "Hotaru Yume",
   "creator": "hotaruyume",
   "homepage": "https://hanime1.me",
