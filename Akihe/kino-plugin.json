@@ -1,0 +1,35 @@
+{
+  "id": "akihentai",
+  "name": "Akihe",
+  "version": "1.0.0",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Hentai Sub-Eng/Sub-Thai de aki-h.com. Últimos, populares, géneros, A-Z, búsqueda y episodios con reproductor directo.",
+  "author": "Hotaru Yume",
+  "creator": "hotaruyume",
+  "homepage": "https://aki-h.com",
+  "hosts": [
+    "aki-h.com",
+    "*.aki-h.com"
+  ],
+  "streamHosts": "any",
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve"
+  ],
+  "categories": [
+    "anime",
+    "series"
+  ],
+  "color": "#E91E8C",
+  "theme": {
+    "accent": "#E91E8C",
+    "onAccent": "#FFFFFF",
+    "background": "#0D0D12",
+    "surface": "#1A1A22",
+    "highlight": "#FF4DA6"
+  }
+}
