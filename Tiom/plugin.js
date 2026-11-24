@@ -1,6 +1,6 @@
 // TioHentai — plugin de Kino para tiohentai.com
 // author: Hotaru Yume · creator: hotaruyume
-// v1.0.1 — parsers robustos (Home vacío en 1.0.0)
+// v1.0.2 — fetch: await r.text() (no res.body); parsers article.*
 
 var BASE = 'https://tiohentai.com';
 var BROWSER_UA = 'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
@@ -72,16 +72,16 @@ async function fetchText(url, opts) {
     'Referer': BASE + '/'
   };
   if (o.headers) for (var k in o.headers) h[k] = o.headers[k];
-  var res = await kino.fetch(url, {
+  var r = await kino.fetch(url, {
     method: o.method || 'GET',
     headers: h,
     timeoutMs: o.timeoutMs,
     body: o.body
   });
-  if (res.status < 200 || res.status >= 400) {
-    throw kino.error('http', 'HTTP ' + res.status + ' en ' + url);
+  if (!r.ok) {
+    throw kino.error('unavailable', 'HTTP ' + r.status + ' en ' + url);
   }
-  return res.body || '';
+  return await r.text();
 }
 
 // ---------- parsers (robustos) ----------
