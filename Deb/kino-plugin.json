@@ -1,0 +1,49 @@
+{
+  "id": "pornhd3x",
+  "name": "PornHD3x",
+  "version": "1.0.1",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Vídeos HD full-length de PornHD3x.tv: Brazzers, Naughty America y más. Rechaza streams de anuncios. Búsqueda y secciones de estudio.",
+  "author": "Hotaru Yume",
+  "creator": "hotaruyume",
+  "homepage": "https://www9.pornhd3x.tv",
+  "hosts": [
+    "pornhd3x.tv",
+    "*.pornhd3x.tv",
+    "www9.pornhd3x.tv",
+    "www.pornhd3x.tv",
+    "cdnamz.me",
+    "*.cdnamz.me",
+    "cdn-aws-t11.cdnamz.me",
+    "cdn-aws-exp.cdnamz.me",
+    "project1content.com",
+    "*.project1content.com"
+  ],
+  "streamHosts": "any",
+  "capabilities": ["search", "home", "browse", "resolve"],
+  "categories": ["movies"],
+  "color": "#FF1493",
+  "icon": "icon.png",
+  "theme": {
+    "accent": "#FF1493",
+    "onAccent": "#FFFFFF",
+    "background": "#0A0A0A",
+    "surface": "#1A1A1A",
+    "highlight": "#FF69B4"
+  },
+  "settings": [
+    {
+      "key": "quality",
+      "label": "Calidad preferida",
+      "type": "select",
+      "default": "auto",
+      "options": [
+        { "value": "auto", "label": "Automática (mejor disponible)" },
+        { "value": "1080", "label": "1080p" },
+        { "value": "720", "label": "720p" },
+        { "value": "480", "label": "480p" }
+      ]
+    }
+  ]
+}
