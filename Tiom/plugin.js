@@ -1,12 +1,14 @@
 // TioHentai — plugin de Kino para tiohentai.com
 // author: Hotaru Yume · creator: hotaruyume
-// v1.0.2 — fetch: await r.text() (no res.body); parsers article.*
+// v1.1.0 — kino-resolver + YourUpload local + browser.capture
 
 var BASE = 'https://tiohentai.com';
 var BROWSER_UA = 'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
 // Prioridad: YourUpload (MP4 rápido) > Voe > Mega al final
 var PRIO = ['yourupload', 'voe', 'mega'];
+var RESOLVER_REPO = 'xuper-plugin/kino-plugin-kino-resolver';
+var HLS_MIME = 'application/x-mpegURL';
 
 // ---------- utilidades ----------
 
@@ -238,21 +240,57 @@ function extractVideosArray(html) {
   }
 }
 
+async function followVidcache(url) {
+  // YourUpload sirve en vidcache.net:8161 → 302 a sNNN.vidcache.net:8166
+  try {
+    var r = await kino.fetch(url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': BROWSER_UA,
+        'Referer': 'https://www.yourupload.com/',
+        'Accept': '*/*'
+      },
+      timeoutMs: 10000
+    });
+    if (r.status >= 300 && r.status < 400) {
+      var loc = (r.headers && (r.headers.location || r.headers.Location)) || '';
+      if (loc) {
+        if (loc.indexOf('//') === 0) loc = 'https:' + loc;
+        if (loc.indexOf('http') === 0) return loc;
+      }
+    }
+  } catch (e) {}
+  return url;
+}
+
 async function resolveYourUpload(embedUrl) {
   var html = await fetchText(embedUrl, { timeoutMs: 12000 });
+  var mp4 = null;
   var m = html.match(/file\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i);
-  if (m) return { url: m[1], mime: 'video/mp4', label: 'YourUpload' };
-  m = html.match(/["'](https?:\/\/[^"']*vidcache\.net[^"']+\.mp4[^"']*)["']/i);
-  if (m) return { url: m[1], mime: 'video/mp4', label: 'YourUpload' };
-  m = html.match(/sources?\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+)["']/i);
-  if (m) {
-    return {
-      url: m[1],
-      mime: m[1].indexOf('.m3u8') >= 0 ? 'application/x-mpegURL' : 'video/mp4',
-      label: 'YourUpload'
-    };
+  if (m) mp4 = m[1];
+  if (!mp4) {
+    m = html.match(/["'](https?:\/\/[^"']*vidcache\.net[^"']*\.mp4[^"']*)["']/i);
+    if (m) mp4 = m[1];
   }
-  return null;
+  if (!mp4) {
+    m = html.match(/sources?\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+)["']/i);
+    if (m && /\.mp4/i.test(m[1])) mp4 = m[1];
+  }
+  if (!mp4) return null;
+  // Seguir 302 al nodo sNNN.vidcache.net:8166 (reproducible con Range)
+  if (/vidcache\.net/i.test(mp4)) {
+    mp4 = await followVidcache(mp4);
+  }
+  return {
+    url: mp4,
+    mime: 'video/mp4',
+    label: 'YourUpload',
+    headers: {
+      'User-Agent': BROWSER_UA,
+      'Referer': 'https://www.yourupload.com/'
+    }
+  };
 }
 
 async function resolveVoe(embedUrl) {
@@ -456,6 +494,71 @@ export async function episodes(ref) {
   };
 }
 
+
+async function resolveViaDoor(embedUrl, referer) {
+  if (!kino.plugins || typeof kino.plugins.call !== 'function') return null;
+  try {
+    var res = await kino.plugins.call('resolver', 'resolve', {
+      url: embedUrl,
+      referer: referer || (BASE + '/')
+    });
+    if (!res || res.error === 'dead') return null;
+    var list = Array.isArray(res.streams) ? res.streams : [];
+    var s = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].url) { s = list[i]; break; }
+    }
+    if (!s) return null;
+    var headers = {};
+    if (s.referer) headers.Referer = s.referer;
+    if (Array.isArray(s.headers)) {
+      for (var hi = 0; hi < s.headers.length; hi++) {
+        var h = s.headers[hi];
+        if (h && h.name) headers[h.name] = String(h.value);
+      }
+    }
+    if (!headers.Referer) headers.Referer = referer || embedUrl;
+    if (!headers['User-Agent']) headers['User-Agent'] = BROWSER_UA;
+    var mime = s.kind === 'hls' ? HLS_MIME
+      : (/\.mp4(\?|$)/i.test(s.url) ? 'video/mp4' : HLS_MIME);
+    return {
+      url: s.url,
+      mime: mime,
+      label: s.server || s.quality || 'Resolver',
+      headers: headers
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function resolveViaBrowser(embedUrl, referer) {
+  try {
+    if (!kino.browser || typeof kino.browser.capture !== 'function') return null;
+    var page = await kino.browser.capture(embedUrl, {
+      timeoutMs: 18000,
+      match: '\\.m3u8|\\.mp4',
+      headers: { Referer: referer || (BASE + '/') }
+    });
+    var media = (page && page.media) || [];
+    if (!media.length) return null;
+    var best = null;
+    for (var i = 0; i < media.length; i++) {
+      if (media[i] && media[i].url && /\.m3u8/i.test(media[i].url)) { best = media[i]; break; }
+    }
+    if (!best) best = media[0];
+    if (!best || !best.url) return null;
+    return {
+      url: best.url,
+      mime: best.mime || (/\.mp4/i.test(best.url) ? 'video/mp4' : HLS_MIME),
+      label: 'Browser',
+      headers: best.headers || { Referer: embedUrl, 'User-Agent': BROWSER_UA }
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 export async function resolve(ref) {
   var r = String(ref || '');
   if (r.indexOf('E|') === 0) r = r.slice(2);
@@ -486,16 +589,31 @@ export async function resolve(ref) {
 
   var primary = null;
   var alternatives = [];
+  var resolverMissing = false;
 
   for (var i = 0; i < servers.length; i++) {
     var s = servers[i];
     var key = serverKey(s.name);
+    if (key === 'mega') continue;
     var stream = null;
+
     try {
-      if (key === 'yourupload') stream = await resolveYourUpload(s.url);
-      else if (key === 'voe') stream = await resolveVoe(s.url);
-      else if (key === 'mega') stream = { url: s.url, label: 'MEGA (embed)', mime: 'text/html' };
-    } catch (e) {}
+      stream = await resolveViaDoor(s.url, pageUrl);
+    } catch (e) {
+      if (e && String(e.code || e.message || '').indexOf('provider') >= 0) resolverMissing = true;
+    }
+
+    if (!stream || !stream.url) {
+      try {
+        if (key === 'yourupload') stream = await resolveYourUpload(s.url);
+        else if (key === 'voe') stream = await resolveVoe(s.url);
+      } catch (e2) {}
+    }
+
+    if (!stream || !stream.url) {
+      stream = await resolveViaBrowser(s.url, pageUrl);
+    }
+
     if (!stream || !stream.url) continue;
     if (/malosas|stripchat|adsco|whitetrafsa|creative\./i.test(stream.url)) continue;
     if (!primary) primary = stream;
@@ -503,13 +621,17 @@ export async function resolve(ref) {
       alternatives.push({
         url: stream.url,
         mime: stream.mime,
-        label: stream.label || s.name
+        label: stream.label || s.name,
+        headers: stream.headers
       });
     }
   }
 
   if (!primary) {
-    throw kino.error('resolve', 'No se encontró un stream reproducible (YourUpload/Voe). Prueba más tarde.');
+    var msg = resolverMissing
+      ? 'Instala el motor de reproducción (Plugins ▸ Agregar ▸ xuper-plugin/kino-plugin-kino-resolver) y reintenta.'
+      : 'No hay stream reproducible ahora (YourUpload/Voe). Reintenta más tarde.';
+    throw kino.error('unavailable', 'no-stream', { userMessage: msg });
   }
 
   var out = {
@@ -517,12 +639,13 @@ export async function resolve(ref) {
     mime: primary.mime || (primary.url.indexOf('.m3u8') >= 0 ? 'application/x-mpegURL' : 'video/mp4'),
     label: primary.label || 'YourUpload'
   };
-  if (alternatives.length) out.alternatives = alternatives.slice(0, 6);
-  if (/vidcache\.net/i.test(out.url)) {
+  if (primary.headers) out.headers = primary.headers;
+  else if (/vidcache\.net/i.test(out.url)) {
     out.headers = {
       'User-Agent': BROWSER_UA,
       'Referer': 'https://www.yourupload.com/'
     };
   }
+  if (alternatives.length) out.alternatives = alternatives.slice(0, 6);
   return out;
 }
