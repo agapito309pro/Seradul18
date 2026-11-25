@@ -1,10 +1,10 @@
 {
   "id": "tiohentai",
   "name": "TioHentai",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "apiVersion": 20,
   "entry": "plugin.js",
-  "description": "Hentai ES de tiohentai.com. Usa kino-resolver (Voe) + YourUpload local + captura browser.",
+  "description": "Hentai ES de tiohentai.com. Episodios desde var episodes; kino-resolver + YourUpload.",
   "author": "Hotaru Yume",
   "creator": "hotaruyume",
   "homepage": "https://tiohentai.com",

@@ -1,6 +1,6 @@
 // TioHentai — plugin de Kino para tiohentai.com
 // author: Hotaru Yume · creator: hotaruyume
-// v1.1.0 — kino-resolver + YourUpload local + browser.capture
+// v1.1.1 — episodes: parse var episodes + anime_info (lista JS)
 
 var BASE = 'https://tiohentai.com';
 var BROWSER_UA = 'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
@@ -452,13 +452,45 @@ export async function episodes(ref) {
   if (r.indexOf('S|') === 0) r = r.slice(2);
   else if (r.indexOf('E|') === 0) return { episodes: [] };
   var slug = r.replace(/^\/?hentai\//, '').replace(/\/$/, '');
-  var html = await fetchText(BASE + '/hentai/' + encodeURIComponent(slug));
+  // No encodeURIComponent del slug completo: solo caracteres seguros del sitio
+  var html = await fetchText(BASE + '/hentai/' + slug);
+
+  // El listado de episodios se genera en JS:
+  //   var anime_info = ["id","slug","Title",...];
+  //   var episodes = [8,7,6,...];
+  //   href = "/ver/" + anime_info[1] + "-" + n
   var title = '';
-  var tm = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  if (tm) title = stripTags(tm[1]);
+  var epSlug = slug;
+  var aim = html.match(/var\s+anime_info\s*=\s*\[([^\]]*)\]/);
+  if (aim) {
+    try {
+      var parts = JSON.parse('[' + aim[1].replace(/'/g, '"') + ']');
+      if (parts[1]) epSlug = String(parts[1]);
+      if (parts[2]) title = String(parts[2]);
+    } catch (e) {
+      var qm = aim[1].match(/"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]*)"/);
+      if (qm) {
+        epSlug = qm[2];
+        title = qm[3];
+      }
+    }
+  }
+  if (!title) {
+    var tm = html.match(/<title>([^<]+)<\/title>/i);
+    if (tm) {
+      title = stripTags(tm[1]).replace(/\s*[-–]\s*TioHentai.*$/i, '').trim();
+    }
+  }
+  // h1 del age-gate no es el título de la serie
+  if (/sitio web para adultos/i.test(title)) title = epSlug.replace(/-/g, ' ');
+
   var poster;
-  var pm = html.match(/uploads\/portadas\/[^"'\s]+/i);
-  if (pm) poster = abs('/' + pm[0]);
+  var pm = html.match(/(?:uploads\/portadas\/|og:image["']\s+content=["'])([^"'\s]+)/i);
+  if (pm) {
+    var pu = pm[1];
+    if (pu.indexOf('http') === 0) poster = pu;
+    else poster = abs(pu.indexOf('/') === 0 ? pu : '/' + pu);
+  }
   var overview = '';
   var om = html.match(/<p[^>]*class=["'][^"']*sinopsis[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)
     || html.match(/<div[^>]*class=["'][^"']*(?:sinopsis|description|overview)[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
@@ -466,27 +498,48 @@ export async function episodes(ref) {
 
   var eps = [];
   var seen = {};
-  var re = /href=["']\/ver\/([^"'?#]+)["']/gi;
-  var m;
-  while ((m = re.exec(html))) {
-    var eslug = m[1];
-    if (seen[eslug]) continue;
-    var nm = eslug.match(/-(\d+)$/);
-    var num = nm ? parseInt(nm[1], 10) : 0;
-    if (!(num > 0)) continue;
-    seen[eslug] = 1;
-    eps.push({
-      season: 1,
-      number: num,
-      ref: 'E|' + eslug,
-      title: (title ? title + ' ' : '') + 'Ep. ' + num
-    });
+  // 1) Array JS var episodes = [n, n-1, ...]
+  var epm = html.match(/var\s+episodes\s*=\s*\[([^\]]*)\]/);
+  if (epm) {
+    var nums = epm[1].split(',');
+    for (var i = 0; i < nums.length; i++) {
+      var num = parseInt(String(nums[i]).trim(), 10);
+      if (!(num > 0)) continue;
+      var eslug = epSlug + '-' + num;
+      if (seen[eslug]) continue;
+      seen[eslug] = 1;
+      eps.push({
+        season: 1,
+        number: num,
+        ref: 'E|' + eslug,
+        title: (title ? title + ' ' : '') + 'Ep. ' + num
+      });
+    }
+  }
+  // 2) Fallback: enlaces /ver/ en el HTML
+  if (!eps.length) {
+    var re = /href=["']\/ver\/([^"'?#]+)["']/gi;
+    var m;
+    while ((m = re.exec(html))) {
+      var eslug2 = m[1];
+      if (seen[eslug2]) continue;
+      var nm = eslug2.match(/-(\d+)$/);
+      var num2 = nm ? parseInt(nm[1], 10) : 0;
+      if (!(num2 > 0)) continue;
+      seen[eslug2] = 1;
+      eps.push({
+        season: 1,
+        number: num2,
+        ref: 'E|' + eslug2,
+        title: (title ? title + ' ' : '') + 'Ep. ' + num2
+      });
+    }
   }
   eps.sort(function (a, b) { return a.number - b.number; });
 
   return {
     series: {
-      title: title || slug,
+      title: title || epSlug,
       poster: poster,
       overview: overview || undefined
     },
