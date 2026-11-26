@@ -1,16 +1,19 @@
 // Akihe — plugin de Kino para aki-h.com
 // author: Hotaru Yume · creator: hotaruyume
-// v1.0.0 — basado en el plugin Tiom (parsers robustos)
+// v1.1.0 — parsers ajustados al HTML real (ak-card, /episode/, /videos/, relay v.aki-h.com → aki-h.stream)
 
 var BASE = 'https://aki-h.com';
 var BROWSER_UA = 'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
-// Slugs que son navegación, no series
 var STOP_SLUGS = {
   '': 1, 'latest': 1, 'popular': 1, 'az-list': 1, 'search': 1, 'filter': 1,
-  'genre': 1, 'genres': 1, 'watch': 1, 'video': 1, 'subtitles': 1, 'random': 1,
-  'contact': 1, 'dmca': 1, 'privacy': 1, 'terms': 1
+  'genre': 1, 'genres': 1, 'watch': 1, 'video': 1, 'videos': 1, 'episode': 1,
+  'subtitles': 1, 'random': 1, 'category': 1, 'categories': 1, 'studio': 1,
+  'sound': 1, 'contact': 1, 'dmca': 1, 'privacy': 1, 'terms': 1
 };
+
+// hosts de imágenes legítimas (excluye banners de publicidad)
+var IMG_HOST_RE = /https?:\/\/(?:i|t)\.aki-h\.com\/[^\s"'<>]+\.(?:webp|jpg|jpeg|png)/i;
 
 // ---------- utilidades ----------
 
@@ -51,9 +54,9 @@ function safeId(s) {
   return String(s || '').replace(/[^A-Za-z0-9._~-]/g, '-').slice(0, 100);
 }
 
-function imgFromBlock(block) {
-  var m = String(block).match(/<img[^>]+(?:src|data-src|data-lazy-src)=[\"']([^\"']+)[\"']/i);
-  return m ? abs(m[1]) : undefined;
+function attrFrom(tag, name) {
+  var m = String(tag).match(new RegExp(name + '=["\']([^"\']*)["\']', 'i'));
+  return m ? decodeEntities(m[1]) : '';
 }
 
 async function fetchText(url, opts) {
@@ -80,70 +83,114 @@ async function fetchText(url, opts) {
 
 // ---------- parsers ----------
 
-// Cards genéricas: <a href="/slug/">…<img …>…texto…</a>
+// Card real del sitio:
+//   <div class="ak-card">…<a href="/slug/" title="Título"><img src="https://i.aki-h.com/..."></a>
+//   <h3 class="ak-card__title"><a href="/slug/">Título</a></h3></div>
 function parseCards(html) {
   var out = [];
   var seen = {};
-  var reA = /<a\s[^>]*href=[\"']\/([a-z0-9-]+)\/[\"'][^>]*>([\s\S]*?)<\/a>/gi;
+
+  // 1) método fiable: título en h3.ak-card__title + poster cercano del propio host
+  var reT = /<h3[^>]*class=["'][^"']*ak-card__title[^"']*["'][^>]*>\s*<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   var m;
-  while ((m = reA.exec(html))) {
-    var slug = m[1];
-    if (STOP_SLUGS[slug] || seen[slug]) continue;
-    var block = m[2];
-    var poster = imgFromBlock(block);
-    var text = stripTags(block);
-    if (!poster && !text) continue;
-    var title = titleFromBlock(block) || altFromBlock(block) || text.slice(0, 120);
-    if (!title || title.length < 2) title = slug.replace(/-/g, ' ');
-    // evita bloques de navegación sin imagen y con texto muy corto
-    if (!poster && title.length < 12) continue;
+  while ((m = reT.exec(html))) {
+    var href = m[1];
+    var title = stripTags(m[2]);
+    if (!title) continue;
+    var slug = slugFromHref(href);
+    if (!slug || seen[slug]) continue;
+    // buscar el poster: el <img> del host propio más cercano antes del título
+    var poster = nearestPoster(html, m.index);
     seen[slug] = 1;
-    out.push({
-      id: ('s~' + safeId(slug)).slice(0, 128),
-      ref: 'S|' + slug,
-      kind: 'series',
-      title: title.slice(0, 200),
-      poster: poster,
-      lang: 'en',
-      adult: true
-    });
+    out.push(makeSeries(slug, title, poster));
+  }
+
+  // 2) fallback: <a> con imagen de i.aki-h.com dentro, título en title/alt
+  if (!out.length) {
+    var reA = /<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    while ((m = reA.exec(html))) {
+      var href2 = m[1];
+      var block = m[2];
+      if (!IMG_HOST_RE.test(block)) continue;
+      var slug2 = slugFromHref(href2);
+      if (!slug2 || seen[slug2]) continue;
+      var openTag = m[0].slice(0, m[0].indexOf('>') + 1);
+      var title2 = attrFrom(openTag, 'title')
+        || attrFrom(block, 'alt')
+        || stripTags(block).replace(/^EP[^A-Za-z]*/i, '')
+        || slug2.replace(/-/g, ' ');
+      if (!title2 || title2.length < 2) continue;
+      var poster2 = (block.match(IMG_HOST_RE) || [undefined])[0];
+      seen[slug2] = 1;
+      out.push(makeSeries(slug2, title2, poster2 ? abs(poster2) : undefined));
+    }
   }
   return out;
 }
 
-function titleFromBlock(block) {
-  var m = String(block).match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-  if (m) return stripTags(m[1]);
-  return '';
+function slugFromHref(href) {
+  var h = String(href || '');
+  var m = h.match(/^https?:\/\/(?:[a-z0-9-]+\.)*aki-h\.com\/([a-z0-9-]+)\/?$/i) || h.match(/^\/([a-z0-9-]+)\/?$/);
+  if (!m) return '';
+  var slug = m[1];
+  if (STOP_SLUGS[slug] || /^genre\//.test(slug)) return '';
+  return slug;
 }
 
-function altFromBlock(block) {
-  var m = String(block).match(/alt=[\"']([^\"']+)[\"']/i);
-  return m ? stripTags(m[1]) : '';
+function nearestPoster(html, idx) {
+  // ventana previa al título donde vive la imagen de la card
+  var start = Math.max(0, idx - 1200);
+  var window = html.slice(start, idx + 300);
+  var m = window.match(/<img[^>]*src=["']([^"']+)["'][^>]*>/gi);
+  if (!m) return undefined;
+  for (var i = m.length - 1; i >= 0; i--) {
+    var src = attrFrom(m[i], 'src');
+    if (IMG_HOST_RE.test(src)) return abs(src);
+  }
+  return undefined;
 }
 
-// Episodios: <a href="/watch/CODE/">…</a>
-function parseEpisodesFromHtml(html, seriesTitle) {
+function makeSeries(slug, title, poster) {
+  return {
+    id: ('s~' + safeId(slug)).slice(0, 128),
+    ref: 'S|' + slug,
+    kind: 'series',
+    title: title.slice(0, 200),
+    poster: poster,
+    lang: 'en',
+    adult: true
+  };
+}
+
+// Episodios reales: en /episode/{slug}/ son <a href="/videos/{CODE}/" title="Título">
+function parseEpisodes(html, seriesTitle) {
   var out = [];
   var seen = {};
-  var re = /<a\s[^>]*href=[\"']\/watch\/([A-Za-z0-9]+)\/?[\"'][^>]*>([\s\S]*?)<\/a>/gi;
+  var re = /<a\s[^>]*href=["'][^"']*\/videos\/([A-Za-z0-9]+)\/?["'][^>]*>/gi;
   var m, idx = 0;
   while ((m = re.exec(html))) {
     var code = m[1];
     if (seen[code]) continue;
     seen[code] = 1;
-    var text = stripTags(m[2]) || ('Episodio ' + (idx + 1));
-    var num = episodeNumber(text) || 0;
-    if (!(num > 0)) num = idx + 1;
+    var openTag = m[0];
+    var text = attrFrom(openTag, 'title');
+    if (!text) {
+      // título en el h3 inmediatamente posterior
+      var after = html.slice(m.index, m.index + 1200);
+      var tm = after.match(/<h3[^>]*>\s*<a[^>]*>([\s\S]*?)<\/a>/i);
+      text = tm ? stripTags(tm[1]) : '';
+    }
+    if (!text) text = (seriesTitle ? seriesTitle + ' ' : '') + 'Ep. ' + (idx + 1);
+    var num = episodeNumber(text) || (idx + 1);
     idx++;
     out.push({
       season: 1,
       number: num,
       ref: 'E|' + code,
-      title: text.slice(0, 200) || ((seriesTitle ? seriesTitle + ' ' : '') + 'Ep. ' + num)
+      title: text.slice(0, 200),
+      poster: abs('https://t.aki-h.com/thumbnail/' + code + '.webp')
     });
   }
-  // ordenar conservando estables
   out.sort(function (a, b) { return a.number - b.number; });
   return out;
 }
@@ -160,30 +207,27 @@ function episodeNumber(s) {
 
 export async function home() {
   var rows = [];
+
   try {
-    var html = await fetchText(BASE + '/latest/');
-    var items = parseCards(html).slice(0, 48);
-    if (items.length) rows.push({ id: 'r~ultimos', title: 'Últimos Añadidos', items: items, ref: 'B|latest' });
+    var latestHtml = await fetchText(BASE + '/latest/');
+    var latest = parseCards(latestHtml).slice(0, 48);
+    if (latest.length) rows.push({ id: 'r~ultimos', title: 'Últimos Añadidos', items: latest, ref: 'B|latest' });
   } catch (e) {}
 
   try {
     var popHtml = await fetchText(BASE + '/popular/');
-    var popItems = parseCards(popHtml).slice(0, 48);
-    if (popItems.length) rows.push({ id: 'r~populares', title: 'Más Populares', items: popItems, ref: 'B|popular' });
+    var pop = parseCards(popHtml).slice(0, 48);
+    if (pop.length) rows.push({ id: 'r~populares', title: 'Más Populares', items: pop, ref: 'B|popular' });
   } catch (e) {}
 
-  try {
-    var homeHtml = await fetchText(BASE + '/');
-    var trending = parseCards(homeHtml);
-    // en la home aparecen series nuevas; fuerza filas solo si no duplican
-    var fresh = [];
-    var have = {};
-    rows.forEach(function (r) { r.items.forEach(function (it) { have[it.ref] = 1; }); });
-    trending.forEach(function (it) { if (!have[it.ref]) fresh.push(it); });
-    if (fresh.length >= 6) {
-      rows.splice(0, 0, { id: 'r~nuevos', title: 'Destacados', items: fresh.slice(0, 48), ref: 'B|latest' });
-    }
-  } catch (e) {}
+  // si /latest/ y /popular/ fallan, usar la portada
+  if (!rows.length) {
+    try {
+      var homeHtml = await fetchText(BASE + '/');
+      var cards = parseCards(homeHtml).slice(0, 48);
+      if (cards.length) rows.push({ id: 'r~home', title: 'Destacados', items: cards, ref: 'B|latest' });
+    } catch (e) {}
+  }
 
   return rows;
 }
@@ -197,21 +241,15 @@ export async function search(query) {
     if (cm) page = parseInt(cm[1], 10) || 1;
   }
   var url = BASE + '/search/?q=' + encodeURIComponent(q);
-  try {
-    if (page > 1) url = BASE + '/search/page/' + page + '/?q=' + encodeURIComponent(q);
-    var html = await fetchText(url);
-    var items = parseCards(html);
-    if (!items.length) {
-      // último recurso: filtrar el sitemap por slug
-      items = await sitemapSearch(q);
-    }
-    var next = null;
-    if (items.length >= 12) next = 'p=' + (page + 1);
-    return { items: items.slice(0, 60), next: next };
-  } catch (e) {
-    var items2 = await sitemapSearch(q);
-    return { items: items2.slice(0, 60) };
+  if (page > 1) url += '&page=' + page;
+  var html = await fetchText(url);
+  var items = parseCards(html);
+  if (!items.length) {
+    items = await sitemapSearch(q);
   }
+  var next = null;
+  if (items.length >= 12) next = 'p=' + (page + 1);
+  return { items: items.slice(0, 60), next: next };
 }
 
 var sitemapCache = { t: 0, slugs: [] };
@@ -246,14 +284,7 @@ async function sitemapSearch(q) {
     .filter(function (x) { return x.score > 0; })
     .sort(function (a, b) { return b.score - a.score; })
     .map(function (x) {
-      return {
-        id: ('s~' + safeId(x.slug)).slice(0, 128),
-        ref: 'S|' + x.slug,
-        kind: 'series',
-        title: x.slug.replace(/-/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); }).slice(0, 200),
-        lang: 'en',
-        adult: true
-      };
+      return makeSeries(x.slug, x.slug.replace(/-/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); }));
     });
 }
 
@@ -276,10 +307,6 @@ export async function browse(ref, cursor) {
 
   var html = await fetchText(url);
   var items = parseCards(html);
-  if (!items.length && path === 'az-list') {
-    // A-Z: si no hay cards, lista plana de enlaces
-    items = parseCards(html.replace(/<img[^>]*>/gi, '<img data-x>'));
-  }
   var next = null;
   if (items.length >= 12) next = 'p=' + (page + 1);
   return { items: items.slice(0, 60), next: next };
@@ -298,20 +325,20 @@ export async function episodes(ref) {
   var tm = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
   if (tm) title = stripTags(tm[1]);
   if (!title) title = slug.replace(/-/g, ' ');
-  var poster = imgFromBlock(html);
+  var poster = nearestPoster(html, 0);
+
   var overview = '';
-  var om = html.match(/<p[^>]*class=[\"'][^\"']*(?:sinopsis|description|story|content)[^\"']*[\"'][^>]*>([\s\S]*?)<\/p>/i)
-    || html.match(/<div[^>]*class=[\"'][^\"']*(?:description|story)[^\"']*[\"'][^>]*>([\s\S]*?)<\/div>/i);
+  var om = html.match(/<p[^>]*class=["'][^"']*(?:sinopsis|description|story|content)[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)
+    || html.match(/<div[^>]*class=["'][^"']*(?:description|story)[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
   if (om) overview = stripTags(om[1]).slice(0, 600);
 
-  var eps = parseEpisodesFromHtml(html, title);
-  // si la ficha no trae la lista completa, probar el bloque de episodios vía /watch/
-  if (!eps.length) {
-    try {
-      var w = await fetchText(BASE + '/watch/' + (firstWatchCode(html) || '') + '/');
-      eps = parseEpisodesFromHtml(w, title);
-    } catch (e) {}
-  }
+  // lista completa en /episode/{slug}/
+  var eps = [];
+  try {
+    var epHtml = await fetchText(BASE + '/episode/' + encodeURIComponent(slug) + '/');
+    eps = parseEpisodes(epHtml, title);
+  } catch (e) {}
+  if (!eps.length) eps = parseEpisodes(html, title);
 
   return {
     series: {
@@ -323,12 +350,13 @@ export async function episodes(ref) {
   };
 }
 
-function firstWatchCode(html) {
-  var m = String(html).match(/href=[\"']\/watch\/([A-Za-z0-9]+)\/?[\"']/i);
-  return m ? m[1] : '';
-}
-
 // ---------- resolve ----------
+// Cadena real del sitio (verificada contra scrapers públicos de aki-h.com):
+//   1) página del episodio: /videos/{code}/  →  displayvideo(N, PID)
+//   2) relay: https://v.aki-h.com/f/{code}  (Referer: https://v.aki-h.com/v/{PID})
+//   3) el relay trae <script id="boot"> con JSON servers[] → urls en streaming.aki.today
+//   4) cada url de servidor contiene aki-h.stream/v/{token}
+//   5) stream final: https://aki-h.stream/file/{token}/  (m3u8, Referer aki-h.stream/v/{token})
 
 export async function resolve(ref) {
   var r = String(ref || '');
@@ -341,123 +369,121 @@ export async function resolve(ref) {
     throw kino.error('resolve', 'Referencia de episodio inválida.');
   }
 
-  var pageUrl = BASE + '/watch/' + code + '/';
-  var html = '';
-  try { html = await fetchText(pageUrl); } catch (e) {}
+  var pageUrl = BASE + '/videos/' + code + '/';
+  var page = await fetchText(pageUrl);
+
+  // PID del player (displayvideo(1, 12345))
+  var pid = '';
+  var pm = page.match(/displayvideo\s*\(\s*\d+\s*,\s*(\d+)\s*\)/i);
+  if (pm) pid = pm[1];
+
+  var relayUrl = 'https://v.aki-h.com/f/' + code;
+  var refV = pid ? 'https://v.aki-h.com/v/' + pid : pageUrl;
+
+  var relay = '';
+  try {
+    relay = await fetchText(relayUrl, { headers: { 'Referer': refV }, timeoutMs: 12000 });
+  } catch (e) {}
+
+  // ruta alternativa: /video2/{pid}/ expone 'url': 'https://v.aki-h.com/v/NNN'
+  if (!relay && pid) {
+    try {
+      var playerUrl = BASE + '/video2/' + pid + '/';
+      var player = await fetchText(playerUrl, { headers: { 'Referer': pageUrl }, timeoutMs: 12000 });
+      var um = player.match(/["']url["']\s*:\s*["']([^"']*v\.aki-h\.com\/v\/\d+)/i);
+      if (um) {
+        refV = abs(um[1]);
+        relay = await fetchText(relayUrl, { headers: { 'Referer': refV }, timeoutMs: 12000 });
+      }
+    } catch (e) {}
+  }
+
+  // servidores desde el boot JSON del relay
+  var serverUrls = [];
+  var bm = relay.match(/<script[^>]*id=["']boot["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (bm) {
+    try {
+      var boot = JSON.parse(bm[1]);
+      (boot.servers || []).forEach(function (s) {
+        if (s && s.url && /streaming\.aki\.today/.test(s.url)) serverUrls.push(s.url);
+      });
+    } catch (e) {}
+  }
+  if (!serverUrls.length) {
+    var reS = /https:\/\/streaming\.aki\.today\/[^\s"'<>]+/gi;
+    var sm;
+    while ((sm = reS.exec(relay))) serverUrls.push(sm[0]);
+  }
 
   var primary = null;
   var alternatives = [];
 
-  // 1) iframes / embeds conocidos dentro de la página del reproductor
-  var embeds = [];
-  var reEmb = /https?:\/\/(?!(?:[a-z0-9-]+\.)?aki-h\.com)[a-z0-9.-]+\.[a-z]{2,}\/(?:e(?:mbed)?s?|embed|video|d|v)\/[^\s\"'<>]+/gi;
-  var m;
-  while ((m = reEmb.exec(html))) {
-    var u = m[0].replace(/&amp;/g, '&');
-    if (/\.(?:png|jpe?g|gif|css|js)(?:[?#]|$)/i.test(u)) continue;
-    if (embeds.indexOf(u) < 0) embeds.push(u);
-  }
-
-  // 2) mp4 / m3u8 directos en la página
-  var direct = null;
-  var dm = html.match(/[\"']((?:https?:\/\/|https?:\\?\/\\?\/)[^\s\"']+\.m3u8[^\s\"']*)[\"']/i);
-  if (!dm) dm = html.match(/[\"'](https?:\/\/[^\s\"']+\.mp4[^\s\"']*)[\"']/i);
-  if (dm) {
-    direct = { url: dm[1].replace(/\\/g, ''), label: 'Directo' };
-  }
-
-  // 3) resolvers por host de embed
-  for (var i = 0; i < embeds.length && !primary; i++) {
-    var emb = embeds[i];
-    var stream = null;
+  for (var i = 0; i < serverUrls.length; i++) {
     try {
-      if (/filemoon|moonplayer/i.test(emb)) stream = await resolveM3U8Embed(emb, 'Filemoon');
-      else if (/mp4upload/i.test(emb)) stream = await resolveMp4Upload(emb);
-      else stream = await resolveGenericEmbed(emb);
-    } catch (e) {}
-    if (stream && stream.url) {
-      if (/malosas|stripchat|adsco|creative\./i.test(stream.url)) continue;
-      if (!primary) primary = stream;
-      else alternatives.push(stream);
-    }
-  }
-
-  if (direct) {
-    if (!primary) primary = direct;
-    else alternatives.push(direct);
-  }
-
-  // 4) gateway propio del sitio: /video/{code}/ (redirige al mp4)
-  var gw = BASE + '/video/' + code + '/';
-  var gwStream = { url: gw, mime: 'video/mp4', label: 'Aki-H' };
-  if (!primary) {
-    // comprobar que responde antes de proclamarlo primario
-    try {
-      var g = await kino.fetch(gw, { method: 'GET', headers: { 'User-Agent': BROWSER_UA, 'Referer': pageUrl, 'Range': 'bytes=0-1' }, timeoutMs: 12000 });
-      if (g.status >= 300 && g.status < 400 && g.headers && (g.headers.location || g.headers.Location)) {
-        var loc = abs(g.headers.location || g.headers.Location);
-        gwStream = { url: loc, mime: /\.m3u8/i.test(loc) ? 'application/x-mpegURL' : 'video/mp4', label: 'Aki-H' };
+      var sr = await fetchText(serverUrls[i], { headers: { 'Referer': relayUrl }, timeoutMs: 12000 });
+      var tk = sr.match(/aki-h\.stream\/v\/([^"'/?#]+)/i);
+      if (tk) {
+        var token = tk[1];
+        var stream = {
+          url: 'https://aki-h.stream/file/' + token + '/',
+          mime: 'application/x-mpegURL',
+          label: 'Aki-H HD',
+          headers: {
+            'User-Agent': BROWSER_UA,
+            'Referer': 'https://aki-h.stream/v/' + token,
+            'Accept': '*/*'
+          }
+        };
+        if (!primary) primary = stream;
+        else if (alternatives.length < 5) alternatives.push(stream);
       }
-      primary = gwStream;
-    } catch (e) {
-      primary = gwStream; // igualmente permitir que el reproductor lo intente
+    } catch (e) {}
+  }
+
+  // fallback: embeds externos en la página del episodio
+  if (!primary) {
+    var reEmb = /https?:\/\/(?!(?:[a-z0-9-]+\.)*aki-h\.com)[a-z0-9.-]+\.[a-z]{2,}\/(?:e(?:mbed)?s?|embed|video|d|v)\/[^\s"'<>]+/gi;
+    var em;
+    while ((em = reEmb.exec(page))) {
+      var emb = em[0].replace(/&amp;/g, '&');
+      if (/\.(?:png|jpe?g|gif|webp|css|js)(?:[?#]|$)/i.test(emb)) continue;
+      try {
+        var g = await resolveGenericEmbed(emb);
+        if (g && g.url) { primary = g; break; }
+      } catch (e) {}
     }
-  } else {
-    alternatives.push(gwStream);
   }
 
   if (!primary) {
-    throw kino.error('resolve', 'No se encontró un stream reproducible. Prueba más tarde.');
+    throw kino.error('resolve', 'No se pudo resolver el stream. Prueba más tarde.');
   }
 
   var out = {
     url: primary.url,
-    mime: primary.mime || (primary.url.indexOf('.m3u8') >= 0 ? 'application/x-mpegURL' : 'video/mp4'),
-    label: primary.label || 'Aki-H',
-    headers: { 'User-Agent': BROWSER_UA, 'Referer': BASE + '/' }
+    mime: primary.mime || 'application/x-mpegURL',
+    label: primary.label || 'Aki-H'
   };
-  if (alternatives.length) out.alternatives = alternatives.slice(0, 6);
+  if (primary.headers) out.headers = primary.headers;
+  if (alternatives.length) out.alternatives = alternatives.slice(0, 5);
   return out;
 }
 
 async function resolveGenericEmbed(embedUrl) {
   var html = await fetchText(embedUrl, { timeoutMs: 12000, headers: { 'Referer': BASE + '/' } });
-  var m = html.match(/[\"'](https?:\/\/[^\"']+\.m3u8[^\"']*)[\"']/i);
-  if (m) return { url: m[1], mime: 'application/x-mpegURL', label: hostLabel(embedUrl) };
-  m = html.match(/[\"'](https?:\/\/[^\"']+\.mp4[^\"']*)[\"']/i);
-  if (m) return { url: m[1], mime: 'video/mp4', label: hostLabel(embedUrl) };
-  m = html.match(/sources?\s*:\s*\[\s*\{[^}]*?(?:src|file)\s*:\s*[\"'](https?:\/\/[^\"']+)[\"']/i);
-  if (m) return { url: m[1], mime: /\.m3u8/i.test(m[1]) ? 'application/x-mpegURL' : 'video/mp4', label: hostLabel(embedUrl) };
-  m = html.match(/window\.location\.href\s*=\s*['\"](https?:\/\/[^'\"]+)['\"]/);
+  var m = html.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i);
+  if (m) return { url: m[1], mime: 'application/x-mpegURL', label: hostLabel(embedUrl), headers: { 'User-Agent': BROWSER_UA, 'Referer': embedUrl } };
+  m = html.match(/["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i);
+  if (m) return { url: m[1], mime: 'video/mp4', label: hostLabel(embedUrl), headers: { 'User-Agent': BROWSER_UA, 'Referer': embedUrl } };
+  m = html.match(/sources?\s*:\s*\[\s*\{[^}]*?(?:src|file)\s*:\s*["'](https?:\/\/[^"']+)["']/i);
   if (m) {
-    var h2 = await fetchText(m[1], { timeoutMs: 10000, headers: { 'Referer': BASE + '/' } });
-    var m2 = h2.match(/[\"'](https?:\/\/[^\"']+\.m3u8[^\"']*)[\"']/i) || h2.match(/[\"'](https?:\/\/[^\"']+\.mp4[^\"']*)[\"']/i);
-    if (m2) return { url: m2[1], mime: /\.m3u8/i.test(m2[1]) ? 'application/x-mpegURL' : 'video/mp4', label: hostLabel(m[1]) };
+    var u = m[1];
+    return {
+      url: u,
+      mime: /\.m3u8/i.test(u) ? 'application/x-mpegURL' : 'video/mp4',
+      label: hostLabel(embedUrl),
+      headers: { 'User-Agent': BROWSER_UA, 'Referer': embedUrl }
+    };
   }
-  return null;
-}
-
-async function resolveM3U8Embed(embedUrl, label) {
-  var html = await fetchText(embedUrl, { timeoutMs: 12000, headers: { 'Referer': embedUrl } });
-  var m = html.match(/[\"'](?:src|file|sources?)\s*:\s*[\"']([^\"']+\.m3u8[^\"']*)[\"']/i)
-    || html.match(/[\"'](https?:\/\/[^\s\"']+\.m3u8[^\s\"']*)[\"']/i);
-  if (m) return { url: m[1], mime: 'application/x-mpegURL', label: label };
-  m = html.match(/atob\s*\(\s*[\"']([A-Za-z0-9+/=]{20,})[\"']\s*\)/);
-  if (m) {
-    try {
-      var dec = atob(m[1]);
-      var um = dec.match(/https?:\/\/[^\s\"'<>]+\.m3u8[^\s\"'<>]*/i);
-      if (um) return { url: um[0], mime: 'application/x-mpegURL', label: label };
-    } catch (e) {}
-  }
-  return null;
-}
-
-async function resolveMp4Upload(embedUrl) {
-  var html = await fetchText(embedUrl, { timeoutMs: 12000, headers: { 'Referer': BASE + '/' } });
-  var m = html.match(/sources?\s*:\s*\[\s*\{[^}]*?src\s*:\s*[\"'](https?:\/\/[^\"']+)[\"']/i)
-    || html.match(/[\"'](https?:\/\/[^\"']*mp4upload[^\"']*\.mp4[^\"']*)[\"']/i);
-  if (m) return { url: m[1], mime: 'video/mp4', label: 'Mp4Upload' };
   return null;
 }
 
